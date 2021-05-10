@@ -71,7 +71,8 @@ typedef struct {
     BalHashEntry *entries;
 } BalMap, *BalMapPtr;
 
-BalMapPtr bal_map_create(size_t capacity);
+BalMapPtr bal_map_create(size_t min_capacity);
+void bal_map_init(BalMapPtr map, size_t min_capacity);
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value);
 void bal_map_insert_with_hash(BalMapPtr map, BalStringPtr key, BalValue value, unsigned long hash);
 void bal_map_grow(BalMapPtr map);
@@ -86,6 +87,12 @@ void *zalloc(size_t n_members, size_t member_size);
 BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
     BalMapPtr map = (BalMapPtr)alloc_value(sizeof(BalMap));
+    bal_map_init(map, min_capacity);
+    map->header.tag = HEADER_TAG_MAPPING;
+    return map;
+}
+
+void bal_map_init(BalMapPtr map, size_t min_capacity) {
     map->used = 0;
 
     size_t n = HASH_TABLE_MIN_SIZE;
@@ -99,8 +106,6 @@ BalMapPtr bal_map_create(size_t min_capacity) {
     // n);
     map->n_entries = n;
     map->entries = zalloc(map->n_entries, sizeof(BalHashEntry));
-    map->header.tag = HEADER_TAG_MAPPING;
-    return map;
 }
 
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value) {
@@ -135,17 +140,21 @@ void bal_map_insert_with_hash(BalMapPtr map, BalStringPtr key, BalValue value, u
 }
 
 void bal_map_grow(BalMapPtr map) {
-    BalMapPtr nMap = bal_map_create(map->used + 1);
+    BalMap nMap;
+    bal_map_init(&nMap, map->used + 1);
     // printf("Growing from %ld to %ld\n", map->capacity, nMap->capacity);
 
     BalHashEntry *entries = map->entries;
     size_t n = map->n_entries;
     for (size_t i = 0; i < n; i++) {
         if (entries[i].key != 0) {
-            bal_map_insert(nMap, entries[i].key, entries[i].value);
+            bal_map_insert(&nMap, entries[i].key, entries[i].value);
         }
     }
-    memcpy(map, nMap, sizeof(BalMap));
+    map->used = nMap.used;
+    map->capacity = nMap.capacity;
+    map->n_entries = nMap.n_entries;
+    map->entries = nMap.entries;
 }
 
 BalValue bal_map_lookup(BalMapPtr map, BalStringPtr key) {
