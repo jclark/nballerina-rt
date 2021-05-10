@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+// MSC does not support aligned_alloc
+// _aligned_malloc is like aligned_alloc except that
+// the allocated memory has to be freed with _aligned_free
+#define aligned_alloc(a, n) _aligned_malloc(n, a)
+#endif
 /*
 Assume sizes:
 char * 8
@@ -65,7 +71,7 @@ typedef struct {
     BalHashEntry *entries;
 } BalMap, *BalMapPtr;
 
-BalMapPtr bal_map_create(int capacity);
+BalMapPtr bal_map_create(size_t capacity);
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value);
 void bal_map_insert_with_hash(BalMapPtr map, BalStringPtr key, BalValue value, unsigned long hash);
 void bal_map_grow(BalMapPtr map);
@@ -77,7 +83,7 @@ bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
 BalHeader *alloc_value(size_t n_bytes);
 void *zalloc(size_t n_members, size_t member_size);
 
-BalMapPtr bal_map_create(int min_capacity) {
+BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
     BalMapPtr map = (BalMapPtr)alloc_value(sizeof(BalMap));
     map->used = 0;
@@ -102,7 +108,7 @@ void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value) {
 }
 
 void bal_map_insert_with_hash(BalMapPtr map, BalStringPtr key, BalValue value, unsigned long hash) {
-    int i = hash & (map->n_entries - 1);
+    size_t i = hash & (map->n_entries - 1);
     assert(i >= 0 && i < map->n_entries);
     BalHashEntry *entries = map->entries;
     for (;;) {
@@ -134,7 +140,7 @@ void bal_map_grow(BalMapPtr map) {
 
     BalHashEntry *entries = map->entries;
     size_t n = map->n_entries;
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         if (entries[i].key != 0) {
             bal_map_insert(nMap, entries[i].key, entries[i].value);
         }
@@ -158,7 +164,7 @@ bool bal_string_equals(BalStringPtr s1, BalStringPtr s2) {
 
 // Returns BAL_NULL if not found
 BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long hash) {
-    int i = hash & (map->n_entries - 1);
+    size_t i = hash & (map->n_entries - 1);
     assert(i >= 0 && i < map->n_entries);
     BalHashEntry *entries = map->entries;
     for (;;) {
