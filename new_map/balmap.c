@@ -17,9 +17,9 @@ STATIC_ASSERT(sizeof(size_t) == 8, short_should_be_8_byte);
 #error "Size of int not equal to 4"
 #endif
 
-//#if SIZE_MAX != 0xFFFFFFFFFFFFFFFFUL
-//#error "Size of size_t not equal to 4"
-//#endif
+#if SIZE_MAX != 0xFFFFFFFFFFFFFFFFUL
+#error "Size of size_t not equal to 4"
+#endif
 
 #if ULONG_MAX != 0xFFFFFFFFFFFFFFFF
 #error "Size of long not equal to 8"
@@ -101,18 +101,19 @@ void *zalloc(size_t n_members, size_t member_size);
 
 
 
-bal_map_ptr_t bal_map_create(int capacity) {
+bal_map_ptr_t bal_map_create(int min_capacity) {
      // Want n_entries * LOAD_FACTOR > capacity
     bal_map_ptr_t map = (bal_map_ptr_t)alloc_value(sizeof(bal_map_t));
-    map->capacity = capacity;
     map->used = 0;
 
-    size_t n = 8;
-    while (n * LOAD_FACTOR < capacity) {
+    size_t n = HASH_TABLE_MIN_SIZE;
+    while ((size_t)(n * LOAD_FACTOR) < min_capacity) {
         n <<= 1;
         assert(n != 0);
     }
-    printf("Creating map for capacity %ld with n_entries %ld\n", capacity, n);
+    map->capacity = (size_t)(n * LOAD_FACTOR);
+    assert(map->capacity >= min_capacity);
+    // printf("Creating map for capacity %ld with n_entries %ld\n", map->capacity, n);
     map->n_entries = n;
     map->entries = zalloc(map->n_entries, sizeof(bal_hash_entry_t));
     map->header.tag = HEADER_TAG_MAPPING;
@@ -153,7 +154,7 @@ void bal_map_insert_with_hash(bal_map_ptr_t map, bal_string_ptr_t key, bal_value
 
 void bal_map_grow(bal_map_ptr_t map) {
     bal_map_ptr_t nmap = bal_map_create(map->used + 1);
-    printf("Growing from %ld to %ld\n", map->capacity, nmap->capacity);
+    // printf("Growing from %ld to %ld\n", map->capacity, nmap->capacity);
 
     bal_hash_entry_t *entries = map->entries;
     size_t n = map->n_entries;
@@ -257,5 +258,6 @@ int main() {
         bal_value_t val = bal_map_lookup(map, s);
         assert(bal_string_equals(val.ptr, s));        
     }
+    printf("End\n");
     return 0;
 }
