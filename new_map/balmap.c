@@ -24,7 +24,8 @@ Assume (for now):
 
 #define HEADER_TAG_UNINIT 0
 #define HEADER_TAG_STRING 1
-#define HEADER_TAG_MAPPING 2
+#define HEADER_TAG_ARRAY 2
+#define HEADER_TAG_MAPPING 3
 
 typedef struct {
     uint8_t tag;
@@ -57,6 +58,7 @@ typedef struct {
 
 #define LOAD_FACTOR 0.6f
 #define HASH_TABLE_MIN_SIZE 8
+#define ARRAY_MIN_SIZE 4
 
 typedef struct {
     BalHeader header;
@@ -71,6 +73,17 @@ typedef struct {
     BalHashEntry *entries;
 } BalMap, *BalMapPtr;
 
+typedef struct {
+    BalHeader header;
+    // length of the array
+    size_t length;
+    // allocated size
+    size_t capacity;
+    // may be null if capacity is 0
+    BalValue *values;
+} BalArray, *BalArrayPtr;
+
+
 BalMapPtr bal_map_create(size_t min_capacity);
 void bal_map_init(BalMapPtr map, size_t min_capacity);
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value);
@@ -79,10 +92,17 @@ void bal_map_grow(BalMapPtr map);
 BalValue bal_map_lookup(BalMapPtr map, BalStringPtr key);
 BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long hash);
 unsigned long bal_string_hash(BalStringPtr s);
+BalArrayPtr bal_array_create(size_t capacity);
+BalValue bal_array_get(BalArrayPtr array, int64_t index);
+void bal_array_push(BalArrayPtr array, BalValue value);
+void bal_array_grow(BalArrayPtr array);
+
 BalStringPtr bal_string_create_ascii(char *s);
 bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
 BalHeader *alloc_value(size_t n_bytes);
 void *zalloc(size_t n_members, size_t member_size);
+
+#define panic(msg) assert(0 && msg)
 
 BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
@@ -189,6 +209,47 @@ BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long
             i = map->n_entries - 1;
         }
     }
+}
+
+BalArrayPtr bal_array_create(size_t capacity) {
+    BalArrayPtr array = (BalArrayPtr)alloc_value(sizeof(BalArray));
+    array->capacity = capacity;
+    array->length = 0;
+    array->values = capacity == 0 ? (void *)0 : zalloc(capacity, sizeof(BalValue));
+    array->header.tag = HEADER_TAG_ARRAY;
+    return array;
+}
+
+BalValue bal_array_get(BalArrayPtr array, int64_t index) {
+    if (index < 0 || (uint64_t)index > array->length) {
+        panic("array index out of bounds");
+    }
+    return array->values[(size_t)index];
+}
+
+void bal_array_push(BalArrayPtr array, BalValue value) {
+    if (array->length >= array->capacity) {
+        bal_array_grow(array);
+    }
+    array->values[array->length] = value;
+    array->length += 1;
+}
+
+void bal_array_grow(BalArrayPtr array) {
+    size_t capacity = array->capacity;
+    if (capacity == 0) {
+        capacity = ARRAY_MIN_SIZE;
+    }
+    else {
+        capacity <<= 1;
+        // catch overflow
+        assert(capacity != 0);
+    }
+    BalValue *values = zalloc(capacity, sizeof(BalValue));
+    if (array->values != NULL) {
+        memcpy(values, array->values, sizeof(BalValue)*array->length);
+    }
+    array->capacity = capacity;
 }
 
 // DJB2 hash function
