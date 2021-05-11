@@ -1,3 +1,11 @@
+/* Prototype of runtime for nBallerina */
+
+/*
+Assume (for now):
+1. NoGC memory management - malloc and never free
+2. No exceptions: panic aborts
+*/
+
 #include <assert.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -10,23 +18,17 @@
 // MSC does not support aligned_alloc
 // _aligned_malloc is like aligned_alloc except that
 // the allocated memory has to be freed with _aligned_free
+// Since we're not freeing anything, this doesn't affect us
 #define aligned_alloc(a, n) _aligned_malloc(n, a)
 #endif
-/*
-Assume sizes:
-char * 8
-size_t 4
-
-Assume (for now):
-1. NoGC memory management - malloc and never free
-2. No exceptions: panic aborts
-*/
 
 #define HEADER_TAG_UNINIT 0
 #define HEADER_TAG_INT 1
 #define HEADER_TAG_STRING 2
 #define HEADER_TAG_ARRAY 3
 #define HEADER_TAG_MAPPING 4
+
+// Types
 
 typedef struct {
     uint8_t tag;
@@ -35,29 +37,34 @@ typedef struct {
     uint32_t spare2;
 } BalHeader, *BalHeaderPtr;
 
-// Bottom 3 bits are tag
-// 000 is a pointer to a BalHeader
-// XX1 is (going to be) an integer
-// 010 will be nil
+// Bottom 3 bits of BalValue are a tag
+// 000 means a pointer to a BalHeader
+// XX1 means all but low bit is a signed integer
+// 010 means nil
+// 110 means a  boolean (next bit is whether true or false)
+// 100 is spare
 
 #define IMMED_VALUE_NIL   0b0010
 #define IMMED_VALUE_FALSE 0b0110
 #define IMMED_VALUE_TRUE  0b1110
 #define IMMED_TAG_BOOLEAN 0b0010
-#define BAL_IMMED_TAG_INT 0b1
-
-#define BAL_INT_IMMED_MAX (INTPTR_MAX >> 1)
-#define BAL_INT_IMMED_MIN (INTPTR_MIN >> 1)
-
 #define IMMED_TAG_MASK    0b0111
 
-// Types
+// This bit is set to indicate that an immed value is an integer
+#define IMMED_TAG_INT_MASK 0b1
+
+// Range of int that can stored directly within a BalValue
+#define IMMED_INT_MAX (INTPTR_MAX >> 1)
+#define IMMED_INT_MIN (INTPTR_MIN >> 1)
 
 typedef union {
     // if immed is 0, not a valid value
     intptr_t immed;
     BalHeaderPtr ptr;
 } BalValue;
+
+// Not a Ballerina value
+#define BAL_NULL ((BalValue){.ptr = 0})
 
 typedef struct {
     BalHeader header;
@@ -71,7 +78,6 @@ typedef struct {
     // not zero-terminated
     uint8_t bytes[];
 } BalString, *BalStringPtr;
-
 
 typedef struct {
     BalStringPtr key;
@@ -106,8 +112,7 @@ typedef struct {
 } BalArray, *BalArrayPtr;
 
 
-// Non-inline functions
-
+// Function declarations
 
 BalMapPtr bal_map_create(size_t min_capacity);
 void bal_map_init(BalMapPtr map, size_t min_capacity);
@@ -172,7 +177,7 @@ inline BalValue bal_true() {
 }
 
 inline bool bal_value_is_int(BalValue v) {
-    if (v.immed & BAL_IMMED_TAG_INT) {
+    if (v.immed & IMMED_TAG_INT_MASK) {
         return true;
     }
     if ((v.immed & IMMED_TAG_MASK) == 0) {
@@ -181,27 +186,27 @@ inline bool bal_value_is_int(BalValue v) {
     return false;
 }
 
-// This gets an assertion failure if it is not an bal int
+// This assumes v represents an int
+// If it doesn't, then it gets an assertion failure
+// or undefined behaviour if assertions are violated
 int64_t bal_value_to_int_unsafe(BalValue v) {
     if ((v.immed & IMMED_TAG_MASK) == 0) {
         assert(v.ptr->tag == HEADER_TAG_INT);
         return ((BalIntPtr)v.ptr)->value;
     }
-    assert(v.immed & BAL_IMMED_TAG_INT);
+    assert(v.immed & IMMED_TAG_INT_MASK);
     return v.immed >> 1;
 }
 
 inline BalValue bal_int(int64_t i) {
-    if (BAL_INT_IMMED_MIN <= i && i <= BAL_INT_IMMED_MAX) {
-        return bal_immediate((i << 1) | BAL_IMMED_TAG_INT);
+    if (IMMED_INT_MIN <= i && i <= IMMED_INT_MAX) {
+        return bal_immediate((i << 1) | IMMED_TAG_INT_MASK);
     }
     return bal_int_create(i);
 }
 
 
-// Not a Ballerina value
-#define BAL_NULL ((BalValue){.ptr = 0})
-
+// Implementation
 
 BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
@@ -394,6 +399,8 @@ void *zalloc(size_t n_members, size_t member_size) {
     assert(mem != 0);
     return mem;
 }
+
+// Testing
 
 #define test_int_roundtrip(i) assert((i) == bal_value_to_int_unsafe(bal_int(i)))
 
