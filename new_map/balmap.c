@@ -205,6 +205,18 @@ inline BalValue bal_int(int64_t i) {
     return bal_int_create(i);
 }
 
+inline bool bal_value_is_byte(BalValue v) {
+    return (v.immed & IMMED_TAG_INT_MASK) && v.immed <= 0x1FF;
+}
+
+inline BalValue bal_byte(uint8_t i) {
+    return bal_immediate((i << 1) | IMMED_TAG_INT_MASK);
+}
+
+inline uint8_t bal_value_to_byte_unsafe(BalValue v) {
+    assert(v.immed <= 0x1FF && (v.immed & IMMED_TAG_INT_MASK));
+    return (uint8_t)(v.immed >> 1);
+}
 
 // Implementation
 
