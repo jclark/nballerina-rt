@@ -320,7 +320,7 @@ BalArrayPtr bal_array_create(size_t capacity) {
 }
 
 BalValue bal_array_get(BalArrayPtr array, int64_t index) {
-    if (index < 0 || (uint64_t)index > array->length) {
+    if (index < 0 || (uint64_t)index >= array->length) {
         panic("array index out of bounds");
     }
     return array->values[(size_t)index];
