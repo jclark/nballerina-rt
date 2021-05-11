@@ -25,7 +25,7 @@ Assume (for now):
 #define HEADER_TAG_UNINIT 0
 #define HEADER_TAG_INT 1
 #define HEADER_TAG_STRING 2
-#define HEADER_TAG_ARRAY 3
+#define HEADER_TAG_LIST 3
 #define HEADER_TAG_MAPPING 4
 
 // Types
@@ -44,14 +44,15 @@ typedef struct {
 // 110 means a  boolean (next bit is whether true or false)
 // 100 is spare
 
+#define IMMED_TAG_MASK    0b0111
+#define IMMED_TAG_PTR     0b0000
+#define IMMED_TAG_BOOLEAN 0b0010
+// This bit is set to indicate that an immed value is an integer
+#define IMMED_TAG_INT_MASK 0b1
+
 #define IMMED_VALUE_NIL   0b0010
 #define IMMED_VALUE_FALSE 0b0110
 #define IMMED_VALUE_TRUE  0b1110
-#define IMMED_TAG_BOOLEAN 0b0010
-#define IMMED_TAG_MASK    0b0111
-
-// This bit is set to indicate that an immed value is an integer
-#define IMMED_TAG_INT_MASK 0b1
 
 // Range of int that can stored directly within a BalValue
 #define IMMED_INT_MAX (INTPTR_MAX >> 1)
@@ -164,6 +165,25 @@ inline bool bal_value_is_false(BalValue v) {
     return v.immed == IMMED_VALUE_FALSE;
 }
 
+inline bool bal_value_is_int(BalValue v) {
+    if (v.immed & IMMED_TAG_INT_MASK) {
+        return true;
+    }
+    if ((v.immed & IMMED_TAG_MASK) == 0) {
+        return v.ptr->tag == HEADER_TAG_INT;
+    }
+    return false;
+}
+
+inline bool bal_value_is_mapping(BalValue v) {
+    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == HEADER_TAG_MAPPING;
+}
+
+inline bool bal_value_is_list(BalValue v) {
+    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == HEADER_TAG_LIST;
+}
+
+
 inline BalValue bal_nil() {
     return bal_immediate(IMMED_VALUE_NIL);
 }
@@ -174,16 +194,6 @@ inline BalValue bal_false() {
 
 inline BalValue bal_true() {
     return bal_immediate(IMMED_VALUE_TRUE);
-}
-
-inline bool bal_value_is_int(BalValue v) {
-    if (v.immed & IMMED_TAG_INT_MASK) {
-        return true;
-    }
-    if ((v.immed & IMMED_TAG_MASK) == 0) {
-        return v.ptr->tag == HEADER_TAG_INT;
-    }
-    return false;
 }
 
 // This assumes v represents an int
@@ -332,7 +342,7 @@ BalArrayPtr bal_array_create(size_t capacity) {
     array->capacity = capacity;
     array->length = 0;
     array->values = capacity == 0 ? (void *)0 : zalloc(capacity, sizeof(BalValue));
-    array->header.tag = HEADER_TAG_ARRAY;
+    array->header.tag = HEADER_TAG_LIST;
     return array;
 }
 
