@@ -23,9 +23,10 @@ Assume (for now):
 */
 
 #define HEADER_TAG_UNINIT 0
-#define HEADER_TAG_STRING 1
-#define HEADER_TAG_ARRAY 2
-#define HEADER_TAG_MAPPING 3
+#define HEADER_TAG_INT 1
+#define HEADER_TAG_STRING 2
+#define HEADER_TAG_ARRAY 3
+#define HEADER_TAG_MAPPING 4
 
 typedef struct {
     uint8_t tag;
@@ -34,14 +35,34 @@ typedef struct {
     uint32_t spare2;
 } BalHeader, *BalHeaderPtr;
 
+// Bottom 3 bits are tag
+// 000 is a pointer to a BalHeader
+// XX1 is (going to be) an integer
+// 010 will be nil
+
+#define IMMED_VALUE_NIL   0b0010
+#define IMMED_VALUE_FALSE 0b0110
+#define IMMED_VALUE_TRUE  0b1110
+#define IMMED_TAG_BOOLEAN 0b0010
+#define BAL_IMMED_TAG_INT 0b1
+
+#define BAL_INT_IMMED_MAX (INTPTR_MAX >> 1)
+#define BAL_INT_IMMED_MIN (INTPTR_MIN >> 1)
+
+#define IMMED_TAG_MASK    0b0111
+
+// Types
+
 typedef union {
-    // if imm is 0 not a valid valid
-    uintptr_t imm;
+    // if immed is 0, not a valid value
+    intptr_t immed;
     BalHeaderPtr ptr;
 } BalValue;
 
-// Not a Ballerina value
-#define BAL_NULL ((BalValue){.imm = 0})
+typedef struct {
+    BalHeader header;
+    int64_t value;
+} BalInt, *BalIntPtr;
 
 typedef struct {
     BalHeader header;
@@ -50,6 +71,7 @@ typedef struct {
     // not zero-terminated
     uint8_t bytes[];
 } BalString, *BalStringPtr;
+
 
 typedef struct {
     BalStringPtr key;
@@ -84,6 +106,9 @@ typedef struct {
 } BalArray, *BalArrayPtr;
 
 
+// Non-inline functions
+
+
 BalMapPtr bal_map_create(size_t min_capacity);
 void bal_map_init(BalMapPtr map, size_t min_capacity);
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value);
@@ -99,10 +124,84 @@ void bal_array_grow(BalArrayPtr array);
 
 BalStringPtr bal_string_create_ascii(char *s);
 bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
+BalValue bal_int_create(int64_t n);
+
 BalHeader *alloc_value(size_t n_bytes);
 void *zalloc(size_t n_members, size_t member_size);
 
 #define panic(msg) assert(0 && msg)
+
+// Inline functions
+
+inline BalValue bal_immediate(uintptr_t immed) {
+    BalValue v = { .immed = immed };
+    return v;
+}
+
+inline BalValue bal_pointer(BalHeaderPtr ptr) {
+    BalValue v = { .ptr = ptr };
+    return v;
+}
+
+inline bool bal_value_is_boolean(BalValue v) {
+    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_BOOLEAN;
+}
+
+inline bool bal_value_is_nil(BalValue v) {
+    return v.immed == IMMED_VALUE_NIL;
+}
+
+inline bool bal_value_is_true(BalValue v) {
+    return v.immed == IMMED_VALUE_TRUE;
+}
+
+inline bool bal_value_is_false(BalValue v) {
+    return v.immed == IMMED_VALUE_FALSE;
+}
+
+inline BalValue bal_nil() {
+    return bal_immediate(IMMED_VALUE_NIL);
+}
+
+inline BalValue bal_false() {
+    return bal_immediate(IMMED_VALUE_FALSE);
+}
+
+inline BalValue bal_true() {
+    return bal_immediate(IMMED_VALUE_TRUE);
+}
+
+inline bool bal_value_is_int(BalValue v) {
+    if (v.immed & BAL_IMMED_TAG_INT) {
+        return true;
+    }
+    if ((v.immed & IMMED_TAG_MASK) == 0) {
+        return v.ptr->tag == HEADER_TAG_INT;
+    }
+    return false;
+}
+
+// This gets an assertion failure if it is not an bal int
+int64_t bal_value_to_int_unsafe(BalValue v) {
+    if ((v.immed & IMMED_TAG_MASK) == 0) {
+        assert(v.ptr->tag == HEADER_TAG_INT);
+        return ((BalIntPtr)v.ptr)->value;
+    }
+    assert(v.immed & BAL_IMMED_TAG_INT);
+    return v.immed >> 1;
+}
+
+inline BalValue bal_int(int64_t i) {
+    if (BAL_INT_IMMED_MIN <= i && i <= BAL_INT_IMMED_MAX) {
+        return bal_immediate((i << 1) | BAL_IMMED_TAG_INT);
+    }
+    return bal_int_create(i);
+}
+
+
+// Not a Ballerina value
+#define BAL_NULL ((BalValue){.ptr = 0})
+
 
 BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
@@ -247,6 +346,7 @@ void bal_array_grow(BalArrayPtr array) {
     }
     BalValue *values = zalloc(capacity, sizeof(BalValue));
     if (array->values != NULL) {
+        // we assume zalloc will have failed if capacity*sizeof(BalValue) exceeds a size_t
         memcpy(values, array->values, sizeof(BalValue)*array->length);
     }
     array->capacity = capacity;
@@ -274,6 +374,13 @@ BalStringPtr bal_string_create_ascii(char *s) {
     return str;
 }
 
+BalValue bal_int_create(int64_t i) {
+    BalIntPtr ip = (BalIntPtr)alloc_value(sizeof(BalInt));
+    ip->value = i;
+    ip->header.tag = HEADER_TAG_INT;
+    return bal_pointer(&(ip->header));
+}
+
 BalHeaderPtr alloc_value(size_t n_bytes) {
     void *mem = aligned_alloc(8, n_bytes);
     assert(mem != 0);
@@ -288,7 +395,27 @@ void *zalloc(size_t n_members, size_t member_size) {
     return mem;
 }
 
-int main() {
+#define test_int_roundtrip(i) assert((i) == bal_value_to_int_unsafe(bal_int(i)))
+
+void test_int() {
+    test_int_roundtrip(0);
+    test_int_roundtrip(1);
+    test_int_roundtrip(2);
+    test_int_roundtrip(3);
+    test_int_roundtrip(100);
+    test_int_roundtrip(1024);
+    test_int_roundtrip(-1);
+    test_int_roundtrip(-2);
+    test_int_roundtrip(-3);
+    test_int_roundtrip(-4611686018427387906);
+    test_int_roundtrip(-4611686018427387905);
+    test_int_roundtrip(-4611686018427387904);
+    test_int_roundtrip(0x3FFFFFFFFFFFFFFF - 1);
+    test_int_roundtrip(0x3FFFFFFFFFFFFFFF);
+    test_int_roundtrip(0x3FFFFFFFFFFFFFFF + 1);
+}
+
+void test_map() {
     char buf[32];
     BalMapPtr map = bal_map_create(42);
     printf("Inserting\n");
@@ -309,5 +436,12 @@ int main() {
         assert(bal_string_equals((BalStringPtr)val.ptr, s));
     }
     printf("End\n");
+}
+
+int main() {
+    printf("Testing map\n");
+    test_map();
+    printf("Testing int\n");
+    test_int();
     return 0;
 }
