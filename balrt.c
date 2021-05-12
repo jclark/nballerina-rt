@@ -132,8 +132,9 @@ BalStringPtr bal_string_create_ascii(char *s);
 bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
 BalValue bal_int_create(int64_t n);
 
+// All allocations go through one of these
 BalHeader *alloc_value(size_t n_bytes);
-void *zalloc(size_t n_members, size_t member_size);
+void *alloc_array(size_t n_members, size_t member_size);
 
 #define panic(msg) assert(0 && msg)
 
@@ -251,7 +252,7 @@ void bal_map_init(BalMapPtr map, size_t min_capacity) {
     // printf("Creating map for capacity %ld with n_entries %ld\n", map->capacity,
     // n);
     map->n_entries = n;
-    map->entries = zalloc(map->n_entries, sizeof(BalHashEntry));
+    map->entries = alloc_array(map->n_entries, sizeof(BalHashEntry));
 }
 
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value) {
@@ -341,7 +342,7 @@ BalArrayPtr bal_array_create(size_t capacity) {
     BalArrayPtr array = (BalArrayPtr)alloc_value(sizeof(BalArray));
     array->capacity = capacity;
     array->length = 0;
-    array->values = capacity == 0 ? (void *)0 : zalloc(capacity, sizeof(BalValue));
+    array->values = capacity == 0 ? (void *)0 : alloc_array(capacity, sizeof(BalValue));
     array->header.tag = HEADER_TAG_LIST;
     return array;
 }
@@ -371,9 +372,9 @@ void bal_array_grow(BalArrayPtr array) {
         // catch overflow
         assert(capacity != 0);
     }
-    BalValue *values = zalloc(capacity, sizeof(BalValue));
+    BalValue *values = alloc_array(capacity, sizeof(BalValue));
     if (array->values != NULL) {
-        // we assume zalloc will have failed if capacity*sizeof(BalValue) exceeds a size_t
+        // we assume alloc_array will have failed if capacity*sizeof(BalValue) exceeds a size_t
         memcpy(values, array->values, sizeof(BalValue)*array->length);
     }
     array->capacity = capacity;
@@ -416,7 +417,7 @@ BalHeaderPtr alloc_value(size_t n_bytes) {
     return h;
 }
 
-void *zalloc(size_t n_members, size_t member_size) {
+void *alloc_array(size_t n_members, size_t member_size) {
     void *mem = calloc(n_members, member_size);
     assert(mem != 0);
     return mem;
