@@ -1,4 +1,4 @@
-project(bal_map)
-cmake_minimum_required(VERSION 3.16)
+project(balrt)
+cmake_minimum_required(VERSION 3.20)
 
-add_executable( map balmap.c )
+add_executable( balrt balrt.c )
