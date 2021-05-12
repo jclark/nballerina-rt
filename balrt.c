@@ -139,7 +139,7 @@ void *zalloc(size_t n_members, size_t member_size);
 
 // Inline functions
 
-inline BalValue bal_immediate(uintptr_t immed) {
+inline BalValue bal_immediate(intptr_t immed) {
     BalValue v = { .immed = immed };
     return v;
 }
@@ -210,7 +210,7 @@ int64_t bal_value_to_int_unsafe(BalValue v) {
 
 inline BalValue bal_int(int64_t i) {
     if (IMMED_INT_MIN <= i && i <= IMMED_INT_MAX) {
-        return bal_immediate((i << 1) | IMMED_TAG_INT_MASK);
+        return bal_immediate(((intptr_t)i << 1) | IMMED_TAG_INT_MASK);
     }
     return bal_int_create(i);
 }
