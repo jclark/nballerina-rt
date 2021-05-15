@@ -46,7 +46,7 @@ typedef struct {
 
 #define IMMED_TAG_MASK    0b0111
 #define IMMED_TAG_PTR     0b0000
-#define IMMED_TAG_BOOLEAN 0b0010
+#define IMMED_TAG_BOOLEAN 0b0110
 // This bit is set to indicate that an immed value is an integer
 #define IMMED_TAG_INT_MASK 0b1
 
