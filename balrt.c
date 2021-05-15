@@ -22,15 +22,26 @@ Assume (for now):
 #define aligned_alloc(a, n) _aligned_malloc(n, a)
 #endif
 
-#define HEADER_TAG_UNINIT 0
-#define HEADER_TAG_INT 1
-#define HEADER_TAG_STRING 2
-#define HEADER_TAG_LIST 3
-#define HEADER_TAG_MAPPING 4
+// Uniform type tag
+// Uniform types are like basic types, except that selectively immutable basic types are
+// split into mutable and readonly uniform types.
+typedef enum {
+    UTYPE_NIL,
+    UTYPE_BOOLEAN,
+    UTYPE_INT,
+    UTYPE_STRING,
+    UTYPE_LIST_RW,
+    UTYPE_MAPPING_RW
+} BalUTypeTag;
+
+// nil is never boxed
+#define HEADER_TAG_UNINIT UTYPE_NIL
 
 // Types
 
 typedef struct {
+    // These are from BalUTypeTag
+    // Not declared as UType, because we want it to be a uint8_t
     uint8_t tag;
     uint8_t gc_reserved;
     uint16_t spare1;
@@ -44,15 +55,17 @@ typedef struct {
 // 110 means a  boolean (next bit is whether true or false)
 // 100 is spare
 
-#define IMMED_TAG_MASK    0b0111
-#define IMMED_TAG_PTR     0b0000
-#define IMMED_TAG_BOOLEAN 0b0110
+#define IMMED_TAG_MASK    0b111
+#define IMMED_TAG_PTR     0b000
+#define IMMED_TAG_BOOLEAN 0b110
 // This bit is set to indicate that an immed value is an integer
-#define IMMED_TAG_INT_MASK 0b1
+#define IMMED_FLAG_INT 0b1
 
-#define IMMED_VALUE_NIL   0b0010
-#define IMMED_VALUE_FALSE 0b0110
-#define IMMED_VALUE_TRUE  0b1110
+#define IMMED_TAG_NIL     0b010     
+#define IMMED_VALUE_NIL   IMMED_TAG_NIL
+#define IMMED_VALUE_FALSE IMMED_TAG_BOOLEAN
+#define IMMED_FLAG_BOOLEAN 0b1000
+#define IMMED_VALUE_TRUE  (IMMED_TAG_BOOLEAN|IMMED_FLAG_BOOLEAN)
 
 // Range of int that can stored directly within a BalValue
 #define IMMED_INT_MAX (INTPTR_MAX >> 1)
@@ -166,24 +179,39 @@ inline bool bal_value_is_false(BalValue v) {
     return v.immed == IMMED_VALUE_FALSE;
 }
 
+inline BalUTypeTag bal_value_utype_tag(BalValue v) {
+    int tag = v.immed & IMMED_TAG_MASK;
+    if (tag == IMMED_TAG_PTR) {
+        return v.ptr->tag;
+    }
+    // Don't use ?: for this
+    // clang optimizes less well
+    if (tag == IMMED_TAG_NIL) {
+        return UTYPE_NIL;
+    }
+    if (tag == IMMED_TAG_BOOLEAN) {
+        return UTYPE_BOOLEAN;
+    }
+    return UTYPE_INT;
+}
+
 inline bool bal_value_is_int(BalValue v) {
-    if (v.immed & IMMED_TAG_INT_MASK) {
+    if (v.immed & IMMED_FLAG_INT) {
         return true;
     }
     if ((v.immed & IMMED_TAG_MASK) == 0) {
-        return v.ptr->tag == HEADER_TAG_INT;
+        return v.ptr->tag == UTYPE_INT;
     }
     return false;
 }
 
 inline bool bal_value_is_mapping(BalValue v) {
-    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == HEADER_TAG_MAPPING;
+    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == UTYPE_MAPPING_RW;
 }
 
 inline bool bal_value_is_list(BalValue v) {
-    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == HEADER_TAG_LIST;
+    return (v.immed & IMMED_TAG_MASK) == IMMED_TAG_PTR && v.ptr->tag == UTYPE_LIST_RW;
 }
-
 
 inline BalValue bal_nil() {
     return bal_immediate(IMMED_VALUE_NIL);
@@ -202,30 +230,30 @@ inline BalValue bal_true() {
 // or undefined behaviour if assertions are violated
 int64_t bal_value_to_int_unsafe(BalValue v) {
     if ((v.immed & IMMED_TAG_MASK) == 0) {
-        assert(v.ptr->tag == HEADER_TAG_INT);
+        assert(v.ptr->tag == UTYPE_INT);
         return ((BalIntPtr)v.ptr)->value;
     }
-    assert(v.immed & IMMED_TAG_INT_MASK);
+    assert(v.immed & IMMED_FLAG_INT);
     return v.immed >> 1;
 }
 
 inline BalValue bal_int(int64_t i) {
     if (IMMED_INT_MIN <= i && i <= IMMED_INT_MAX) {
-        return bal_immediate(((intptr_t)i << 1) | IMMED_TAG_INT_MASK);
+        return bal_immediate(((intptr_t)i << 1) | IMMED_FLAG_INT);
     }
     return bal_int_create(i);
 }
 
 inline bool bal_value_is_byte(BalValue v) {
-    return (v.immed & IMMED_TAG_INT_MASK) && (uintptr_t)v.immed <= 0x1FF;
+    return (v.immed & IMMED_FLAG_INT) && (uintptr_t)v.immed <= 0x1FF;
 }
 
 inline BalValue bal_byte(uint8_t i) {
-    return bal_immediate((i << 1) | IMMED_TAG_INT_MASK);
+    return bal_immediate((i << 1) | IMMED_FLAG_INT);
 }
 
 inline uint8_t bal_value_to_byte_unsafe(BalValue v) {
-    assert((uintptr_t)v.immed <= 0x1FF && (v.immed & IMMED_TAG_INT_MASK));
+    assert((uintptr_t)v.immed <= 0x1FF && (v.immed & IMMED_FLAG_INT));
     return (uint8_t)(v.immed >> 1);
 }
 
@@ -235,7 +263,7 @@ BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
     BalMapPtr map = (BalMapPtr)alloc_value(sizeof(BalMap));
     bal_map_init(map, min_capacity);
-    map->header.tag = HEADER_TAG_MAPPING;
+    map->header.tag = UTYPE_MAPPING_RW;
     return map;
 }
 
@@ -343,7 +371,7 @@ BalArrayPtr bal_array_create(size_t capacity) {
     array->capacity = capacity;
     array->length = 0;
     array->values = capacity == 0 ? (void *)0 : alloc_array(capacity, sizeof(BalValue));
-    array->header.tag = HEADER_TAG_LIST;
+    array->header.tag = UTYPE_LIST_RW;
     return array;
 }
 
@@ -398,14 +426,14 @@ BalStringPtr bal_string_create_ascii(char *s) {
     memcpy(str->bytes, s, len);
     str->n_bytes = len;
     str->n_code_points = len;
-    str->header.tag = HEADER_TAG_STRING;
+    str->header.tag = UTYPE_STRING;
     return str;
 }
 
 BalValue bal_int_create(int64_t i) {
     BalIntPtr ip = (BalIntPtr)alloc_value(sizeof(BalInt));
     ip->value = i;
-    ip->header.tag = HEADER_TAG_INT;
+    ip->header.tag = UTYPE_INT;
     return bal_pointer(&(ip->header));
 }
 
@@ -467,6 +495,8 @@ void test_map() {
     }
     printf("End\n");
 }
+
+
 
 int main() {
     printf("Testing map\n");
