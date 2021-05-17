@@ -20,6 +20,8 @@ Assume (for now):
 // the allocated memory has to be freed with _aligned_free
 // Since we're not freeing anything, this doesn't affect us
 #define aligned_alloc(a, n) _aligned_malloc(n, a)
+#include <intrin.h>
+#define __builtin_popcount __popcnt
 #endif
 
 // Uniform type tag
@@ -30,6 +32,7 @@ typedef enum {
     UTYPE_BOOLEAN,
     UTYPE_INT,
     UTYPE_STRING,
+    UTYPE_OBJECT_RO,
     UTYPE_LIST_RW,
     UTYPE_MAPPING_RW
 } BalUTypeTag;
@@ -80,6 +83,17 @@ typedef union {
 // Not a Ballerina value
 #define BAL_NULL ((BalValue){.ptr = 0})
 
+
+// A BalType is a union of int:Unsigned32 and a BalComplexTypePtr.
+// The former case represents a type that is union of zero or
+// more complete uniform types.
+// The latter is a Ballerina object representing more complex cases.
+// BalType is the basis for runtime type checking.
+// Note this represents a type not a type descriptor.
+// Fast path is implemented in native code;
+// more complex cases are implemented in Ballerina by the runtime library.
+typedef BalValue BalType;
+
 typedef struct {
     BalHeader header;
     int64_t value;
@@ -94,6 +108,24 @@ typedef struct {
 } BalString, *BalStringPtr;
 
 typedef struct {
+    BalHeader header;
+    // XXX something for annotations
+    BalType type;
+} BalTypeDesc, *BalTypeDescPtr;
+
+
+// A class is a kind of typedesc
+// XXX it needs additional fields describing the class
+typedef BalTypeDescPtr BalClassPtr;
+
+typedef struct {
+    BalHeader header;
+    BalClassPtr cls;
+    // Object fields follow immediately
+    // Layout determined by class
+} BalObject, *BalObjectPtr;
+
+typedef struct {
     BalStringPtr key;
     BalValue value;
 } BalHashEntry;
@@ -102,8 +134,11 @@ typedef struct {
 #define HASH_TABLE_MIN_SIZE 8
 #define ARRAY_MIN_SIZE 4
 
+// This representation is only used
+// for RW maps with no individual type descriptors
 typedef struct {
     BalHeader header;
+    BalType memberType;
     // how many of entries are used
     size_t used;
     // used must be < capacity
@@ -115,8 +150,11 @@ typedef struct {
     BalHashEntry *entries;
 } BalMap, *BalMapPtr;
 
+// This representation is only used
+// for RW maps with no individual type descriptors
 typedef struct {
     BalHeader header;
+    BalType memberType;
     // length of the array
     size_t length;
     // allocated size
@@ -125,18 +163,30 @@ typedef struct {
     BalValue *values;
 } BalArray, *BalArrayPtr;
 
+// This needs to match the Ballerina definition
+// in the Ballerina part of the runtime library.
+// This will be a read-only object
+// This corresponds to ComplexSemType in this file:
+// https://github.com/jclark/semtype/blob/master/modules/core/core.bal
+typedef struct {
+    BalObject obj;  // header common to all objects
+    uint32_t all;
+    uint32_t some;
+    BalArrayPtr subtypeData; // XXX should be read-only
+} BalComplexType, *BalComplexTypePtr;
 
 // Function declarations
 
-BalMapPtr bal_map_create(size_t min_capacity);
+BalMapPtr bal_map_create(size_t min_capacity, BalType memberType);
 void bal_map_init(BalMapPtr map, size_t min_capacity);
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value);
+void bal_map_insert_unsafe(BalMapPtr map, BalStringPtr key, BalValue value);
 void bal_map_insert_with_hash(BalMapPtr map, BalStringPtr key, BalValue value, unsigned long hash);
 void bal_map_grow(BalMapPtr map);
 BalValue bal_map_lookup(BalMapPtr map, BalStringPtr key);
 BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long hash);
 unsigned long bal_string_hash(BalStringPtr s);
-BalArrayPtr bal_array_create(size_t capacity);
+BalArrayPtr bal_array_create(size_t capacity, BalType memberType);
 BalValue bal_array_get(BalArrayPtr array, int64_t index);
 void bal_array_push(BalArrayPtr array, BalValue value);
 void bal_array_grow(BalArrayPtr array);
@@ -145,13 +195,17 @@ BalStringPtr bal_string_create_ascii(char *s);
 bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
 BalValue bal_int_create(int64_t n);
 
+bool bal_value_has_complex_type(BalValue v, BalComplexTypePtr tp);
+bool bal_usubtype_contains(BalUTypeTag tag, BalValue subtypeData, BalValue value);
+
+
 // All allocations go through one of these
 #define ALLOC_FIXED_VALUE(T) ((T*)alloc_value(sizeof(T)))
 
 BalHeader *alloc_value(size_t n_bytes);
 void *alloc_array(size_t n_members, size_t member_size);
 
-#define panic(msg) assert(0 && msg)
+#define panic(msg) assert(0 && (msg))
 
 // Inline functions
 
@@ -195,6 +249,19 @@ inline BalUTypeTag bal_value_utype_tag(BalValue v) {
         return UTYPE_BOOLEAN;
     }
     return UTYPE_INT;
+}
+
+inline bool bal_value_has_type(BalValue v, BalType t) {
+    if (t.immed & IMMED_FLAG_INT) {
+        // We need to add 1 to the tag, because the int is shifted left 1
+       return (t.immed & (1 << (1 + bal_value_utype_tag(v)))) != 0;
+    }
+    assert(bal_value_utype_tag(v) == UTYPE_OBJECT_RO);
+    return bal_value_has_complex_type(v, (BalComplexTypePtr)t.ptr);
+}
+
+inline BalType bal_type_from_utype_tag(BalUTypeTag tag) {
+    return bal_immediate((1 << (tag + 1)) | IMMED_FLAG_INT);
 }
 
 inline bool bal_value_is_int(BalValue v) {
@@ -261,11 +328,12 @@ inline uint8_t bal_value_to_byte_unsafe(BalValue v) {
 
 // Implementation
 
-BalMapPtr bal_map_create(size_t min_capacity) {
+BalMapPtr bal_map_create(size_t min_capacity, BalType memberType) {
     // Want n_entries * LOAD_FACTOR > capacity
     BalMapPtr map = ALLOC_FIXED_VALUE(BalMap);
     bal_map_init(map, min_capacity);
     map->header.tag = UTYPE_MAPPING_RW;
+    map->memberType = memberType;
     return map;
 }
 
@@ -286,6 +354,12 @@ void bal_map_init(BalMapPtr map, size_t min_capacity) {
 }
 
 void bal_map_insert(BalMapPtr map, BalStringPtr key, BalValue value) {
+    if (!bal_value_has_type(value, map->memberType))
+        panic("inherent type violation");
+    bal_map_insert_unsafe(map, key, value);
+}
+
+void bal_map_insert_unsafe(BalMapPtr map, BalStringPtr key, BalValue value) {
     bal_map_insert_with_hash(map, key, value, bal_string_hash(key));
 }
 
@@ -325,7 +399,7 @@ void bal_map_grow(BalMapPtr map) {
     size_t n = map->n_entries;
     for (size_t i = 0; i < n; i++) {
         if (entries[i].key != 0) {
-            bal_map_insert(&nMap, entries[i].key, entries[i].value);
+            bal_map_insert_unsafe(&nMap, entries[i].key, entries[i].value);
         }
     }
     map->used = nMap.used;
@@ -368,12 +442,13 @@ BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long
     }
 }
 
-BalArrayPtr bal_array_create(size_t capacity) {
+BalArrayPtr bal_array_create(size_t capacity, BalType memberType) {
     BalArrayPtr array = ALLOC_FIXED_VALUE(BalArray);
     array->capacity = capacity;
     array->length = 0;
     array->values = capacity == 0 ? (void *)0 : alloc_array(capacity, sizeof(BalValue));
     array->header.tag = UTYPE_LIST_RW;
+    array->memberType = memberType;
     return array;
 }
 
@@ -385,6 +460,8 @@ BalValue bal_array_get(BalArrayPtr array, int64_t index) {
 }
 
 void bal_array_push(BalArrayPtr array, BalValue value) {
+    if (!bal_value_has_type(value, array->memberType))
+        panic("inherent type violation");
     if (array->length >= array->capacity) {
         bal_array_grow(array);
     }
@@ -439,6 +516,36 @@ BalValue bal_int_create(int64_t i) {
     return bal_pointer(&(ip->header));
 }
 
+inline int bitCount(uint32_t bits) {
+    // This needs -march=ivybridge to get it to use the instruction
+    return __builtin_popcount(bits);
+}
+
+bool bal_value_has_complex_type(BalValue v, BalComplexTypePtr tp) {
+    BalUTypeTag tag = bal_value_utype_tag(v);
+    uint32_t flag = 1 << tag;
+    if (tp->all & flag) {
+        return true;
+    }
+    if ((tp->some & flag) == 0) {
+        return false;
+    }
+    int i = bitCount((flag - 1) & tp->some);
+    return bal_usubtype_contains(tag, tp->subtypeData->values[i], v);
+}
+
+// Tells whether subtype of a uniform type contains a value
+// tag is the uniform type tag
+// subtypeData describes the subtype of the uniform type tag
+// in a uniform type dependent way.
+// This should index into an array of functions, each of which is
+// implemented in Ballerina or C
+// We know that `value` has the uniform type `tag`.
+bool bal_usubtype_contains(BalUTypeTag tag, BalValue subtypeData, BalValue value) {
+    // XXX This needs to call out to Ballerina code
+    return true;
+}
+
 BalHeaderPtr alloc_value(size_t n_bytes) {
     void *mem = aligned_alloc(8, n_bytes);
     assert(mem != 0);
@@ -477,7 +584,7 @@ void test_int() {
 
 void test_map() {
     char buf[32];
-    BalMapPtr map = bal_map_create(42);
+    BalMapPtr map = bal_map_create(42, bal_type_from_utype_tag(UTYPE_STRING));
     printf("Inserting\n");
 
     for (int i = 0; i < 1000000; i++) {
