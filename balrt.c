@@ -170,8 +170,16 @@ typedef struct {
 // https://github.com/jclark/semtype/blob/master/modules/core/core.bal
 typedef struct {
     BalObject obj;  // header common to all objects
+    // A bit vector representing a set of uniform types.
+    // It contains a uniform type iff this type contains all of the uniform type.
     uint32_t all;
+    // A bit vector representing a set of uniform types.
+    // It contains a uniform type iff this complex type contains some, but not all, of the uniform type.
     uint32_t some;
+    // This array has one entry for each bit that is set in `some`.
+    // The entry contains data describing the subtype of the uniform type that is contained in this complex type.
+    // The data is a BalValue and its format depends on which uniform type it is.
+    // The entries are in increasing order of uniform type tag. 
     BalArrayPtr subtypeData; // XXX should be read-only
 } BalComplexType, *BalComplexTypePtr;
 
@@ -253,14 +261,17 @@ inline BalUTypeTag bal_value_utype_tag(BalValue v) {
 
 inline bool bal_value_has_type(BalValue v, BalType t) {
     if (t.immed & IMMED_FLAG_INT) {
-        // We need to add 1 to the tag, because the int is shifted left 1
+        // We need to add 1 to the tag, because an immediate int is shifted left 1
        return (t.immed & (1 << (1 + bal_value_utype_tag(v)))) != 0;
     }
+    // Since it's the union of int:Unsigned32 and an object
+    // the int must be immediate
     assert(bal_value_utype_tag(v) == UTYPE_OBJECT_RO);
     return bal_value_has_complex_type(v, (BalComplexTypePtr)t.ptr);
 }
 
 inline BalType bal_type_from_utype_tag(BalUTypeTag tag) {
+    // Add 1 because an immediate int is shifted left 1
     return bal_immediate((1 << (tag + 1)) | IMMED_FLAG_INT);
 }
 
