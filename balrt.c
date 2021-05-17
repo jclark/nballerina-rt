@@ -146,6 +146,8 @@ bool bal_string_equals(BalStringPtr s1, BalStringPtr s2);
 BalValue bal_int_create(int64_t n);
 
 // All allocations go through one of these
+#define ALLOC_FIXED_VALUE(T) ((T*)alloc_value(sizeof(T)))
+
 BalHeader *alloc_value(size_t n_bytes);
 void *alloc_array(size_t n_members, size_t member_size);
 
@@ -261,7 +263,7 @@ inline uint8_t bal_value_to_byte_unsafe(BalValue v) {
 
 BalMapPtr bal_map_create(size_t min_capacity) {
     // Want n_entries * LOAD_FACTOR > capacity
-    BalMapPtr map = (BalMapPtr)alloc_value(sizeof(BalMap));
+    BalMapPtr map = ALLOC_FIXED_VALUE(BalMap);
     bal_map_init(map, min_capacity);
     map->header.tag = UTYPE_MAPPING_RW;
     return map;
@@ -367,7 +369,7 @@ BalValue bal_map_lookup_with_hash(BalMapPtr map, BalStringPtr key, unsigned long
 }
 
 BalArrayPtr bal_array_create(size_t capacity) {
-    BalArrayPtr array = (BalArrayPtr)alloc_value(sizeof(BalArray));
+    BalArrayPtr array = ALLOC_FIXED_VALUE(BalArray);
     array->capacity = capacity;
     array->length = 0;
     array->values = capacity == 0 ? (void *)0 : alloc_array(capacity, sizeof(BalValue));
@@ -431,7 +433,7 @@ BalStringPtr bal_string_create_ascii(char *s) {
 }
 
 BalValue bal_int_create(int64_t i) {
-    BalIntPtr ip = (BalIntPtr)alloc_value(sizeof(BalInt));
+    BalIntPtr ip = ALLOC_FIXED_VALUE(BalInt);
     ip->value = i;
     ip->header.tag = UTYPE_INT;
     return bal_pointer(&(ip->header));
